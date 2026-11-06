@@ -1,0 +1,816 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#1e2a48">
+<title>Blue Bayou Dashboard</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,400..600;1,6..96,400..600&family=Jost:wght@400;500;600&display=swap">
+<style>html,body{margin:0;background:#f4efe4}</style>
+</head>
+<body>
+<script>/* Blue Bayou sync: one place every page reads and writes.
+   Always keeps a copy in this browser (works anywhere, syncs between tabs).
+   When the page runs inside claude.ai with the shared database granted, every
+   change also goes to the database and comes back live on every other device. */
+window.BB = (function () {
+  var K = { data: "bb-data-v1", orders: "bb-orders-v1", reqs: "bb-requests-v1" };
+  function get(k, f) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : f; } catch (e) { return f; } }
+  function put(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  var subs = [], db = null, live = false, liveCbs = [];
+  function on(fn) { subs.push(fn); }
+  function emit(key, remote) { subs.forEach(function (fn) { try { fn(key, remote); } catch (e) { console.error(e); } }); }
+  function onLive(fn) { if (live) fn(); else liveCbs.push(fn); }
+  // one write at a time per document
+  var q = {};
+  function write(path, fn) { var p = (q[path] || Promise.resolve()).then(fn).catch(function (e) { console.warn("[bb sync]", path, e && e.code); }); q[path] = p; return p; }
+  function upsert(list, item) { var i = -1; list.forEach(function (x, j) { if (x.id === item.id) i = j; }); if (i < 0) list.push(item); else list[i] = item; return list; }
+  var api = {
+    K: K, get: get, on: on, onLive: onLive,
+    isLive: function () { return live; },
+    setData: function (D) {
+      put(K.data, D); emit(K.data, false);
+      if (db) write("bb/data", function () { return db.doc("bb/data").set({ json: JSON.stringify(D), at: Date.now() }); });
+    },
+    putOrder: function (o) {
+      put(K.orders, upsert(get(K.orders, []), o)); emit(K.orders, false);
+      if (db) write("orders/" + o.id, function () { return db.collection("orders").doc(o.id).set(o); });
+    },
+    delOrder: function (id) {
+      put(K.orders, get(K.orders, []).filter(function (o) { return o.id !== id; })); emit(K.orders, false);
+      if (db) write("orders/" + id, function () { return db.collection("orders").doc(id).delete(); });
+    },
+    putReq: function (r) {
+      put(K.reqs, upsert(get(K.reqs, []), r)); emit(K.reqs, false);
+      if (db) write("requests/" + r.id, function () { return db.collection("requests").doc(r.id).set(r); });
+    },
+    delReq: function (id) {
+      put(K.reqs, get(K.reqs, []).filter(function (r) { return r.id !== id; })); emit(K.reqs, false);
+      if (db) write("requests/" + id, function () { return db.collection("requests").doc(id).delete(); });
+    },
+    seedLocal: function (key, val) { if (!live && get(key, null) === null) put(key, val); }
+  };
+  // other tabs in this browser
+  window.addEventListener("storage", function (e) { if (e.key === K.data || e.key === K.orders || e.key === K.reqs) emit(e.key, true); });
+  // the shared database, when this view has it
+  (function () {
+    if (!window.claude || typeof window.claude.use !== "function") return;
+    window.claude.use("db").then(function (d) {
+      if (!d) return;
+      db = d;
+      var first = { data: true, orders: true, reqs: true };
+      function goLive() { if (live) return; live = true; liveCbs.splice(0).forEach(function (fn) { try { fn(); } catch (e) {} }); }
+      db.doc("bb/data").onSnapshot(function (s) {
+        if (s.exists) {
+          var j = s.data().json, cur = JSON.stringify(get(K.data, null));
+          if (j && j !== cur) { try { put(K.data, JSON.parse(j)); emit(K.data, true); } catch (e) {} }
+        }
+        if (!s.metadata.fromCache && first.data) { first.data = false; goLive(); }
+      }, function (e) { console.warn("[bb sync] data", e.code); });
+      function coll(name, key, flag) {
+        db.collection(name).onSnapshot(function (qs) {
+          if (qs.metadata.fromCache && first[flag]) return;
+          first[flag] = false;
+          var rows = qs.docs.map(function (x) { return x.data(); });
+          if (JSON.stringify(rows) !== JSON.stringify(get(key, []))) { put(key, rows); emit(key, true); }
+          goLive();
+        }, function (e) { console.warn("[bb sync] " + name, e.code); });
+      }
+      coll("orders", K.orders, "orders"); coll("requests", K.reqs, "reqs");
+    });
+  })();
+  return api;
+})();
+</script>
+<div id="dash"></div>
+<template id="dashTpl"><style>
+/* Blue Bayou owner dashboard. Same navy, gold and ivory as the website, set for daylight use on a phone or a tablet at the host stand. */
+:host {
+  display: block; --navy: #1e2a48; --night: #151e35; --gold: #d6b46e; --gold-lt: #ecd39d; --gold-ink: #9c7638;
+  --bg: #f4efe4; --card: #fffdf8; --line: rgba(30,42,72,.12); --ink: #1e2a48; --stone: #66697a; --soft: #ece5d6;
+  --late: #b4432a; --late-bg: #f8e4dc; --ok: #3c7a52;
+  --display: "Bodoni Moda", "Bodoni 72", Didot, "Times New Roman", serif;
+  --body: "Jost", "Futura", "Century Gothic", "Avenir Next", sans-serif;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+.dsh { min-height: 100vh; background: var(--bg); color: var(--ink); font: 400 1rem/1.5 var(--body); -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+h1, h2, h3, p { margin: 0; }
+h1, h2, h3 { font-family: var(--display); font-weight: 400; line-height: 1.05; text-wrap: balance; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--gold-ink); outline-offset: 2px; }
+.wrap { max-width: 1240px; margin-inline: auto; padding-left: max(20px, env(safe-area-inset-left, 0px)); padding-right: max(20px, env(safe-area-inset-right, 0px)); }
+
+/* top bar */
+.top { position: sticky; top: 0; z-index: 20; background: var(--card); border-bottom: 1px solid var(--line); padding-top: env(safe-area-inset-top, 0px); }
+.top .wrap { display: flex; align-items: center; gap: 28px; min-height: 68px; }
+.brand { display: grid; line-height: 1.05; text-decoration: none; color: var(--ink); }
+.brand b { font: 500 1.45rem var(--display); letter-spacing: -.01em; }
+.brand b i { font-weight: 400; }
+.brand small { font-size: .78rem; color: var(--stone); }
+.tabs { display: flex; gap: 6px; align-self: stretch; }
+.tabs button { position: relative; border: 0; background: none; padding: 0 12px; font: 500 .98rem var(--body); color: var(--stone); display: inline-flex; align-items: center; gap: 8px; }
+.tabs button[aria-selected="true"] { color: var(--ink); }
+.tabs button[aria-selected="true"]::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: 0; height: 2px; background: var(--gold-ink); }
+.bdg { min-width: 22px; height: 22px; padding: 0 6px; border-radius: 99px; background: var(--late); color: #fff; font: 600 .76rem/22px var(--body); text-align: center; }
+.bdg[data-n="0"] { display: none; }
+.right { margin-left: auto; display: flex; align-items: center; gap: 18px; }
+.clock { font-size: .9rem; color: var(--stone); white-space: nowrap; }
+.taking { display: inline-flex; align-items: center; gap: 10px; border: 0; border-radius: 99px; padding: 7px 8px 7px 14px; background: #e6f0e8; color: var(--ok); font: 500 .9rem var(--body); }
+.taking .sw { width: 40px; height: 24px; border-radius: 99px; background: var(--ok); position: relative; transition: background-color .2s; }
+.taking .sw::after { content: ""; position: absolute; top: 3px; left: 19px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: left .2s; }
+.taking.off { background: var(--late-bg); color: var(--late); }
+.taking.off .sw { background: #c9b9b2; }
+.taking.off .sw::after { left: 3px; }
+
+main { padding-block: 34px 120px; }
+.pg-h { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 16px 28px; }
+.pg-h h1 { font-size: clamp(2.2rem, 1.6rem + 2vw, 3.2rem); }
+.pg-h h1 i { color: var(--gold-ink); }
+.pg-h p { margin-top: 6px; font-size: 1.05rem; color: var(--stone); }
+.pg-h p b { color: var(--ink); font-weight: 500; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: 99px; padding: .85em 1.4em; background: var(--navy); color: #fff; font: 500 .95rem var(--body); text-decoration: none; }
+.btn:hover { background: #2c3c64; }
+.btn.gold { background: var(--gold); color: var(--night); }
+.btn.gold:hover { background: var(--gold-lt); }
+.btn.soft { background: var(--soft); color: var(--ink); }
+.btn.soft:hover { background: #e2d9c6; }
+.btn.sm { padding: .55em 1em; font-size: .86rem; }
+.link { color: var(--ink); font-weight: 500; text-decoration: underline; text-decoration-color: var(--gold-ink); text-underline-offset: 5px; background: none; border: 0; padding: 0; }
+h2.sec { font-size: 1.6rem; margin-top: 40px; }
+.sec-sub { color: var(--stone); font-size: .92rem; margin-top: 4px; }
+
+/* sample notice */
+.sample { margin-top: 24px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 14px 18px; border-radius: 14px; background: #fbf3df; border: 1px solid rgba(156,118,56,.3); font-size: .93rem; }
+.sample b { font-weight: 600; }
+.sample .act { margin-left: auto; display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* stats */
+.stats { margin-top: 26px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: var(--card); border: 1px solid var(--line); border-radius: 16px; }
+.stat { padding: 18px 22px; }
+.stat + .stat { border-left: 1px solid var(--line); }
+.stat small { font-size: .82rem; color: var(--stone); }
+.stat b { display: block; margin-top: 2px; font: 500 1.7rem/1.1 var(--display); font-variant-numeric: lining-nums tabular-nums; }
+
+/* order cards */
+.cards { margin-top: 18px; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 18px; }
+.oc { background: var(--card); border: 1px solid var(--line); border-radius: 18px; display: flex; flex-direction: column; overflow: hidden; }
+.oc.fresh { animation: pop 1.2s ease-out; }
+@keyframes pop { 0% { box-shadow: 0 0 0 0 rgba(214,180,110,.9); } 100% { box-shadow: 0 0 0 14px rgba(214,180,110,0); } }
+.oc-h { display: flex; align-items: center; gap: 12px; padding: 14px 16px; background: #f7f1e4; }
+.oc.ready .oc-h { background: #e6f0e8; }
+.oc.late .oc-h { background: var(--late-bg); }
+.ring { width: 46px; height: 46px; flex: none; position: relative; }
+.ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.ring b { position: absolute; inset: 0; display: grid; place-items: center; font: 600 .98rem var(--body); font-variant-numeric: tabular-nums; }
+.oc-h .tm { display: grid; line-height: 1.25; }
+.oc-h .tm b { font-weight: 600; font-size: .95rem; }
+.oc-h .tm small { color: var(--stone); font-size: .82rem; }
+.tag { margin-left: auto; font: 500 .78rem var(--body); background: var(--card); border-radius: 99px; padding: 4px 10px; color: var(--ink); white-space: nowrap; }
+.oc-b { padding: 16px 16px 6px; flex: 1; }
+.who { display: flex; align-items: start; justify-content: space-between; gap: 10px; }
+.who b { font: 500 1.35rem/1.15 var(--display); }
+.who small { display: block; color: var(--stone); font-size: .82rem; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.call { flex: none; font: 500 .82rem var(--body); color: var(--ink); text-decoration: none; background: var(--soft); border-radius: 99px; padding: 6px 11px; white-space: nowrap; }
+.lines { list-style: none; padding: 0; margin: 14px 0 0; display: grid; gap: 7px; }
+.lines li { display: grid; grid-template-columns: 30px minmax(0, 1fr); font-size: .97rem; }
+.lines li b { color: var(--gold-ink); font-weight: 600; }
+.lines li small { color: var(--stone); }
+.note { margin-top: 12px; background: #fbf3df; border-radius: 10px; padding: 10px 12px; font-size: .9rem; }
+.note b { display: block; font: italic 400 .9rem var(--display); color: var(--gold-ink); }
+.oc-f { padding: 12px 16px 16px; display: grid; gap: 10px; }
+.tot { display: flex; justify-content: space-between; align-items: baseline; }
+.tot b { font: 500 1.35rem var(--display); font-variant-numeric: lining-nums tabular-nums; }
+.tot small { font-size: .8rem; color: var(--stone); background: var(--soft); border-radius: 99px; padding: 2px 9px; }
+.big { width: 100%; border: 0; border-radius: 12px; padding: 14px; font: 600 1rem var(--body); background: var(--gold); color: var(--night); }
+.big:hover { background: var(--gold-lt); }
+.oc.ready .big { background: var(--navy); color: #fff; }
+.undo { justify-self: center; font-size: .84rem; color: var(--stone); background: none; border: 0; text-decoration: underline; text-underline-offset: 3px; }
+.empty { margin-top: 18px; padding: 36px 24px; border: 1px dashed rgba(30,42,72,.2); border-radius: 18px; text-align: center; color: var(--stone); }
+.empty b { display: block; font: 400 1.5rem var(--display); color: var(--ink); margin-bottom: 4px; }
+
+/* done list */
+.done { margin-top: 14px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; }
+.drow { display: grid; grid-template-columns: 90px minmax(0, 1.2fr) minmax(0, 2fr) auto; gap: 16px; align-items: center; padding: 13px 20px; font-size: .93rem; }
+.drow + .drow { border-top: 1px solid var(--line); }
+.drow .t { color: var(--stone); font-variant-numeric: tabular-nums; }
+.drow .n { font-weight: 500; }
+.drow .i { color: var(--stone); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drow .m { font-weight: 500; font-variant-numeric: tabular-nums; }
+
+/* requests */
+.filters { display: flex; gap: 6px; background: var(--soft); padding: 4px; border-radius: 99px; width: max-content; max-width: 100%; }
+.filters button { border: 0; background: none; padding: .5em 1.1em; border-radius: 99px; font: 500 .9rem var(--body); color: var(--stone); }
+.filters button[aria-pressed="true"] { background: var(--card); color: var(--ink); box-shadow: 0 1px 3px rgba(30,42,72,.12); }
+.rq { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 18px 20px; display: grid; gap: 12px; align-content: start; }
+.rq-h { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.kind { font: 500 .8rem var(--body); padding: 3px 10px; border-radius: 99px; background: var(--navy); color: #fff; }
+.kind.cater { background: var(--gold); color: var(--night); }
+.rq-h small { color: var(--stone); font-size: .82rem; margin-left: auto; white-space: nowrap; }
+.rq h3 { font-size: 1.45rem; }
+.facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.facts div { background: #f7f1e4; border-radius: 10px; padding: 9px 12px; }
+.facts small { display: block; font-size: .78rem; color: var(--stone); }
+.facts b { font-weight: 500; }
+.rq .acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.st { font: 500 .82rem var(--body); padding: 4px 10px; border-radius: 99px; background: var(--soft); }
+.st.booked { background: #e6f0e8; color: var(--ok); }
+.st.no { background: var(--late-bg); color: var(--late); }
+.st.called { background: #fbf3df; color: var(--gold-ink); }
+
+/* music */
+.live { margin-top: 24px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 16px 20px; border-radius: 16px; background: var(--navy); color: #fff; }
+.live .lamp { width: 10px; height: 10px; border-radius: 50%; background: #e0563a; box-shadow: 0 0 10px rgba(224,86,58,.8); }
+.live .lamp.off { background: var(--gold); box-shadow: none; }
+.live b { font: italic 400 1.4rem var(--display); color: var(--gold-lt); }
+.live small { color: #c3c9da; margin-left: auto; font-size: .88rem; }
+.days { margin-top: 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 16px; }
+.day { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 16px 18px 14px; }
+.day.today { border-color: var(--gold-ink); box-shadow: 0 0 0 1px var(--gold-ink); }
+.day-h { display: flex; align-items: baseline; gap: 10px; }
+.day-h h3 { font-size: 1.4rem; }
+.day-h small { color: var(--gold-ink); font-weight: 500; font-size: .82rem; }
+.set { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(84px, .7fr) minmax(92px, .75fr) 34px; gap: 8px; align-items: center; margin-top: 10px; }
+.set input, .set select, .fld input, .fld select, .fld textarea, .srch { width: 100%; min-width: 0; border: 1px solid rgba(30,42,72,.18); border-radius: 10px; padding: 9px 11px; background: #fff; font-size: .95rem; }
+.set select, .fld select { appearance: none; -webkit-appearance: none; background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%239c7638' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 9px center; padding-right: 26px; }
+.x { width: 34px; height: 34px; border: 0; border-radius: 50%; background: var(--soft); color: var(--stone); font-size: 1.1rem; line-height: 1; }
+.x:hover { background: var(--late-bg); color: var(--late); }
+.addset { margin-top: 12px; font: 500 .88rem var(--body); color: var(--gold-ink); background: none; border: 0; padding: 4px 0; }
+.nomusic { margin-top: 10px; color: var(--stone); font-size: .9rem; }
+
+/* website */
+.seg { margin-top: 22px; display: flex; gap: 4px; background: var(--soft); padding: 4px; border-radius: 99px; width: max-content; max-width: 100%; }
+.seg button { border: 0; background: none; padding: .55em 1.2em; border-radius: 99px; font: 500 .92rem var(--body); color: var(--stone); }
+.seg button[aria-pressed="true"] { background: var(--card); color: var(--ink); box-shadow: 0 1px 3px rgba(30,42,72,.12); }
+.mgrid { margin-top: 20px; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 22px; align-items: start; }
+.chips { margin-top: 14px; display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
+.chips button { flex: none; border: 0; border-radius: 99px; padding: .5em 1em; background: var(--card); border: 1px solid var(--line); font: 500 .86rem var(--body); color: var(--ink); }
+.chips button[aria-pressed="true"] { background: var(--navy); color: #fff; border-color: var(--navy); }
+.chips button span { color: var(--stone); margin-left: 4px; }
+.chips button[aria-pressed="true"] span { color: #c3c9da; }
+.mgroup { margin-top: 22px; }
+.mgroup h3 { font-size: 1.35rem; }
+.mgroup h3 small { font: 400 .82rem var(--body); color: var(--stone); margin-left: 8px; }
+.dish { margin-top: 10px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 16px; align-items: center; }
+.dish.off { opacity: .6; }
+.dish .dn b { font: 500 1.12rem var(--display); }
+.dish .dn p { color: var(--stone); font-size: .88rem; margin-top: 2px; }
+.dish .dn .edit { font-size: .82rem; color: var(--gold-ink); background: none; border: 0; padding: 0; margin-top: 4px; text-decoration: underline; text-underline-offset: 3px; }
+.dish .pr { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
+.money { display: inline-flex; align-items: center; border: 1px solid rgba(30,42,72,.18); border-radius: 10px; background: #fff; padding-left: 9px; }
+.money span { color: var(--stone); font-size: .88rem; white-space: nowrap; margin-right: 4px; }
+.money input { width: 74px; border: 0; padding: 8px 9px 8px 2px; background: transparent; font-variant-numeric: tabular-nums; text-align: right; border-radius: 10px; }
+.dish .tog { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 10px; border-top: 1px solid var(--line); font-size: .88rem; color: var(--stone); }
+.switch { display: inline-flex; align-items: center; gap: 10px; border: 0; background: none; padding: 0; font: 500 .88rem var(--body); color: var(--ink); }
+.switch .sw { width: 38px; height: 22px; border-radius: 99px; background: var(--ok); position: relative; }
+.switch .sw::after { content: ""; position: absolute; top: 3px; left: 19px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .2s; }
+.switch[aria-checked="false"] .sw { background: #c9c3b6; }
+.switch[aria-checked="false"] .sw::after { left: 3px; }
+.dedit { grid-column: 1 / -1; display: grid; gap: 10px; }
+.side { position: sticky; top: 92px; background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 20px; display: grid; gap: 16px; }
+.side .num { font: 500 2.6rem/1 var(--display); }
+.side .num + small { color: var(--stone); font-size: .88rem; }
+.side .two { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.side .two div { padding: 12px 0; }
+.side .two div + div { border-left: 1px solid var(--line); padding-left: 14px; }
+.side .two b { display: block; font: 500 1.3rem var(--display); }
+.side .two small { color: var(--stone); font-size: .8rem; }
+.side .off-list { font-size: .88rem; color: var(--stone); }
+.side .off-list b { color: var(--ink); font-weight: 500; }
+.form { margin-top: 20px; background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 22px; display: grid; gap: 18px; max-width: 820px; }
+.fld { display: grid; gap: 6px; }
+.fld label, .fld .lab { font-weight: 500; font-size: .95rem; }
+.fld .help { font-size: .84rem; color: var(--stone); margin-top: -4px; }
+.fld textarea { resize: vertical; min-height: 70px; line-height: 1.5; }
+.hrs { display: grid; gap: 8px; }
+.hr { display: grid; grid-template-columns: 110px minmax(0, 1fr) 24px minmax(0, 1fr); gap: 10px; align-items: center; }
+.hr span { text-align: center; color: var(--stone); font-size: .88rem; }
+.addform { margin-top: 14px; background: var(--card); border: 1px solid var(--gold-ink); border-radius: 14px; padding: 16px; display: grid; gap: 12px; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+.sync { display: inline-flex; align-items: center; gap: 7px; font: 500 .82rem var(--body); color: var(--ok); }
+.sync i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px rgba(60,122,82,.18); }
+.locked { position: fixed; inset: 0; z-index: 90; background: var(--bg); display: grid; place-items: center; padding: 24px; text-align: center; }
+.locked h2 { font-size: 2rem; } .locked p { margin-top: 10px; color: var(--stone); } .locked a { color: var(--ink); }
+/* toast */
+.toast { position: fixed; left: 50%; bottom: calc(26px + env(safe-area-inset-bottom, 0px)); transform: translate(-50%, 20px); opacity: 0; pointer-events: none; background: var(--night); color: #fff; padding: .8em 1.3em; border-radius: 99px; font-size: .92rem; transition: opacity .25s, transform .25s; z-index: 50; white-space: nowrap; max-width: calc(100% - 32px); overflow: hidden; text-overflow: ellipsis; }
+.toast.on { opacity: 1; transform: translate(-50%, 0); }
+.toast b { color: var(--gold-lt); font-weight: 500; }
+
+/* phone */
+@media (max-width: 860px) {
+  .top .wrap { gap: 14px; min-height: 60px; }
+  .tabs { position: fixed; z-index: 30; left: 0; right: 0; bottom: 0; background: var(--card); border-top: 1px solid var(--line); padding: 6px max(8px, env(safe-area-inset-right, 0px)) calc(6px + env(safe-area-inset-bottom, 0px)) max(8px, env(safe-area-inset-left, 0px)); display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; align-self: auto; }
+  .tabs button { flex-direction: column; gap: 2px; padding: 8px 4px; font-size: .82rem; border-radius: 10px; }
+  .tabs button[aria-selected="true"] { background: var(--soft); }
+  .tabs button[aria-selected="true"]::after { display: none; }
+  .tabs .bdg { position: absolute; top: 1px; left: calc(50% + 22px); min-width: 18px; height: 18px; line-height: 18px; font-size: .68rem; padding: 0 5px; }
+  .toast { bottom: calc(84px + env(safe-area-inset-bottom, 0px)); }
+  .clock { display: none; }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat:nth-child(3) { border-left: 0; }
+  .stat:nth-child(n+3) { border-top: 1px solid var(--line); }
+  .mgrid { grid-template-columns: minmax(0, 1fr); }
+  .side { position: static; order: -1; }
+  .drow { grid-template-columns: 70px minmax(0, 1fr) auto; }
+  .drow .i { display: none; }
+  .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .days { grid-template-columns: minmax(0, 1fr); }
+  .set { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px; gap: 6px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+  .set input { grid-column: 1 / -1; }
+  .hr { grid-template-columns: 86px minmax(0, 1fr) 16px minmax(0, 1fr); gap: 6px; }
+  .row2 { grid-template-columns: minmax(0, 1fr); }
+  .taking .lbl { display: none; }
+  .taking { padding: 7px 8px; }
+  .sample .act { margin-left: 0; }
+}
+
+/* ================= MOTION: same curves as the website ================= */
+:host { --out: cubic-bezier(.22, 1, .36, 1); --io: cubic-bezier(.65, 0, .35, 1); --spring: cubic-bezier(.34, 1.45, .64, 1); }
+.btn, .big, .call, .x, .switch, .taking, .chips button, .tabs button, .seg button, .filters button, .undo, .addset, .link, .edit, .brand {
+  transition: transform .22s var(--out), background-color .3s var(--out), color .3s var(--out), box-shadow .3s var(--out), opacity .3s var(--out); }
+.btn:active, .big:active, .call:active, .x:active, .switch:active, .taking:active, .chips button:active, .seg button:active, .filters button:active, .addset:active { transform: scale(.96); transition-duration: .08s; }
+.taking, .taking .sw { transition: background-color .35s var(--out), color .35s var(--out); }
+.taking .sw::after, .switch .sw::after { transition: left .38s var(--spring), width .2s var(--out); }
+.switch .sw { transition: background-color .3s var(--out); }
+.switch:active .sw::after, .taking:active .sw::after { width: 21px; }
+.dish { transition: opacity .35s var(--out), border-color .3s var(--out); }
+.dish .tog span { transition: color .3s var(--out); }
+.oc, .rq { transition: background-color .4s var(--out), border-color .4s var(--out); }
+.oc-h { transition: background-color .5s var(--out); }
+.oc .big { transition: background-color .4s var(--out), color .4s var(--out), transform .22s var(--out); }
+.ring circle { transition: stroke-dashoffset .8s var(--out), stroke .5s var(--out); }
+.money, .set input, .set select, .fld input, .fld select, .fld textarea, .srch { transition: border-color .25s var(--out), box-shadow .25s var(--out); }
+.money:focus-within, .set input:focus, .set select:focus, .fld input:focus, .fld select:focus, .fld textarea:focus, .srch:focus { outline: none; border-color: var(--gold-ink); box-shadow: 0 0 0 3px rgba(156,118,56,.16); }
+.toast { transition: opacity .3s var(--out), transform .5s var(--spring); }
+
+/* sliding indicators */
+.seg, .filters { position: relative; }
+@media (min-width: 861px) { .tabs { position: relative; } }
+.tabs .ind { position: absolute; bottom: 0; left: 0; height: 2px; background: var(--gold-ink); pointer-events: none; transition: transform .5s var(--out), width .5s var(--out); }
+.tabs.js button[aria-selected="true"]::after { display: none; }
+.seg .ind, .filters .ind { position: absolute; top: 4px; bottom: 4px; left: 0; border-radius: 99px; background: var(--card); box-shadow: 0 1px 3px rgba(30,42,72,.12); pointer-events: none; transition: transform .5s var(--out), width .5s var(--out); }
+.seg button, .filters button { position: relative; z-index: 1; }
+.seg.js button[aria-pressed="true"], .filters.js button[aria-pressed="true"] { background: none; box-shadow: none; }
+
+/* things that appear */
+.dedit, .addform, .set.new { animation: dIn .45s var(--out) both; }
+.sample:not([hidden]) { animation: dIn .5s var(--out) both; }
+@keyframes dIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+.oc.fresh { animation: dArrive .9s var(--spring) both, pop 1.6s ease-out .3s; }
+@keyframes dArrive { from { opacity: 0; transform: translateY(18px) scale(.94); } to { opacity: 1; transform: none; } }
+.bdg { transition: transform .3s var(--spring); }
+.bdg.bump { animation: dBump .5s var(--spring); }
+@keyframes dBump { 40% { transform: scale(1.35); } }
+
+@media (max-width: 860px) {
+  .tabs .ind { top: 6px; bottom: auto; height: auto; border-radius: 10px; background: var(--soft); z-index: 0; }
+  .tabs button { z-index: 1; }
+  .tabs.js button[aria-selected="true"] { background: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; animation-delay: 0s !important; transition-duration: .001ms !important; transition-delay: 0s !important; }
+}
+
+</style><div class="dsh">
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="./" target="_blank" rel="noopener"><b>Blue <i>Bayou</i></b><small>Your dashboard</small></a>
+    <nav class="tabs" role="tablist" aria-label="Dashboard">
+      <button role="tab" data-t="orders" aria-selected="true">Orders <span class="bdg" id="bOrders" data-n="0">0</span></button>
+      <button role="tab" data-t="requests" aria-selected="false">Parties <span class="bdg" id="bReq" data-n="0">0</span></button>
+      <button role="tab" data-t="music" aria-selected="false">Music</button>
+      <button role="tab" data-t="site" aria-selected="false">Website</button>
+    </nav>
+    <div class="right">
+      <span class="sync" id="syncNote" hidden title="Changes reach every phone and computer within a second or two"><i></i>Synced</span>
+      <span class="clock" id="clock"></span>
+      <button class="taking" id="taking" type="button" aria-pressed="true"><span class="lbl" id="takingL">Taking orders</span><span class="sw"></span></button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <!-- ORDERS -->
+  <section id="p-orders">
+    <div class="pg-h">
+      <div><h1 id="hello">Good evening</h1><p id="waiting">No orders waiting.</p></div>
+      <a class="btn soft" href="./" target="_blank" rel="noopener">Open your website</a>
+    </div>
+    <div class="sample" id="oSample" hidden><span><b>These are sample orders</b> so you can try the buttons. Place a test order on your website and it shows up here.</span><span class="act"><a class="btn sm gold" href="./" target="_blank" rel="noopener">Send a test order</a><button class="btn sm soft" type="button" id="clearO">Clear samples</button></span></div>
+    <div class="stats" id="stats"></div>
+    <h2 class="sec">Right now</h2>
+    <p class="sec-sub">Most urgent first. Tap the big button when the food is bagged, then again when it's picked up.</p>
+    <div class="cards" id="live"></div>
+    <h2 class="sec">Done today</h2>
+    <div class="done" id="doneList"></div>
+  </section>
+
+  <!-- PARTIES & CATERING -->
+  <section id="p-requests" hidden>
+    <div class="pg-h">
+      <div><h1>Parties <i>&amp;</i> catering</h1><p>Requests from the website. Call them back, then mark how it went.</p></div>
+      <div class="filters" role="group" aria-label="Show"><button type="button" data-f="open" aria-pressed="true">To call back</button><button type="button" data-f="all" aria-pressed="false">All requests</button></div>
+    </div>
+    <div class="sample" id="rSample" hidden><span><b>These are sample requests.</b> Send one from the party form on your website to see it arrive.</span><span class="act"><button class="btn sm soft" type="button" id="clearR">Clear samples</button></span></div>
+    <div class="cards" id="reqs"></div>
+  </section>
+
+  <!-- MUSIC -->
+  <section id="p-music" hidden>
+    <div class="pg-h">
+      <div><h1>Who's <i>playing</i></h1><p>Change a name or a time and the website updates right away, including the "Live now" sign.</p></div>
+      <a class="btn soft" href="./#music" target="_blank" rel="noopener">See it on your website</a>
+    </div>
+    <div class="live" id="liveNow"></div>
+    <div class="days" id="days"></div>
+  </section>
+
+  <!-- WEBSITE -->
+  <section id="p-site" hidden>
+    <div class="pg-h">
+      <div><h1>Your <i>website</i></h1><p>Change prices and dishes. Sold out of something? <b>Just switch it off.</b></p></div>
+      <a class="btn soft" href="./#menu" target="_blank" rel="noopener">See your website</a>
+    </div>
+    <div class="seg" role="group" aria-label="Edit"><button type="button" data-s="menu" aria-pressed="true">Menu</button><button type="button" data-s="words" aria-pressed="false">Hours &amp; details</button></div>
+
+    <div id="s-menu">
+      <div class="mgrid">
+        <div>
+          <input class="srch" id="srch" type="search" placeholder="Find a dish" aria-label="Find a dish">
+          <div class="chips" id="cats"></div>
+          <div id="dishes"></div>
+        </div>
+        <aside class="side" id="side"></aside>
+      </div>
+    </div>
+
+    <div id="s-words" hidden>
+      <form class="form" id="words">
+        <div class="fld"><label for="w-ann">Message at the top of your website</label><p class="help">For holidays or news. Leave it empty to hide it. Example: Closed Thanksgiving Day.</p><input id="w-ann" placeholder="Nothing showing right now"></div>
+        <div class="fld"><label for="w-ph">Phone number</label><input id="w-ph" type="tel"></div>
+        <div class="fld"><label for="w-tag">Line above your name</label><p class="help">The short line at the top of the homepage.</p><input id="w-tag"></div>
+        <div class="fld"><label for="w-mus">Live music line</label><p class="help">Shows under tonight's lineup.</p><textarea id="w-mus"></textarea></div>
+        <div class="fld"><span class="lab">Opening hours</span><p class="help">Closing times after midnight count as that night.</p><div class="hrs" id="hrs"></div></div>
+        <div><button class="btn gold" type="submit">Save changes</button></div>
+      </form>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="locked" id="locked" hidden><div><h2>This is the restaurant's dashboard</h2><p>Only Blue Bayou's team can open it. <a href="./">Go to the website</a></p></div></div>
+
+</div></template>
+<script>
+window.BBDash = function (R) {
+  /* ---------- shared data: same store the website uses (see sync.js) ---------- */
+  var DEF = {"v":1,"site":{"taking":true,"announce":"","phone":"(504) 291-3788","tagline":"Restaurant & Oyster Bar on Canal Street","musicNote":"Horns, sax and singers in the dining room. Brunch sets Friday to Sunday."},"hours":{"0":[420,1500],"1":[420,1500],"2":[420,1500],"3":[420,1500],"4":[420,1500],"5":[420,1620],"6":[420,1620]},"menu":{"dinner":[{"h":"To start","items":[{"n":"Louisiana Crab Cake","d":"Fresh crab, onions and peppers, pan seared","on":true,"flag":"most ordered","p":16},{"n":"Oyster Bar Thrash","d":"Crawfish tails and shrimp in Cajun seasoning, lemon garlic butter","on":true,"p":15},{"n":"Fried Alligator Bites","d":"Marinated gator with Creole mustard sauce","on":true,"p":14},{"n":"Chicken & Andouille Gumbo","d":"New Orleans style, over white rice","on":true,"p":10}]},{"h":"Oysters","items":[{"n":"Raw on the Half Shell","d":"Shucked to order, with the fixings","on":true,"p":[["Half dozen",15],["Dozen",27]]},{"n":"Famous Chargrilled","d":"Cajun garlic and herb butter, parmesan, Romano","on":true,"flag":"house favorite","p":[["Half dozen",18],["Dozen",33]]},{"n":"Rockefeller","d":"Spinach, rich cream and cheese","on":true,"p":[["Half dozen",19],["Dozen",35]]},{"n":"Creole","d":"Creole tomato and garlic sauce","on":true,"p":[["Half dozen",18],["Dozen",33]]}],"note":"six to an order"},{"h":"From the kitchen","items":[{"n":"Taste of the Bayou","d":"Pick three or all four: jambalaya, étouffée, red beans, gumbo","on":true,"p":[["Any three",30],["All four",35]],"card":false},{"n":"Cajun Stuffed Redfish","d":"Crabmeat dressing, crawfish cream sauce, jambalaya","on":true,"p":32},{"n":"Blackened Redfish","d":"Cajun spice, sautéed vegetables","on":true,"p":[["Redfish",27],["With jumbo lump crab",35]]},{"n":"Shrimp & Grits Napoleon","d":"Fried green tomatoes, creamy grits, Cajun cream","on":true,"p":24},{"n":"Crawfish Étouffée","d":"Creole tomato stew over rice","on":true,"p":22},{"n":"Mardi Gras Pasta","d":"Shrimp and crawfish in creamy Alfredo over penne","on":true,"p":25},{"n":"Red Beans & Rice","d":"Slow simmered, alligator andouille sausage","on":true,"p":17}]},{"h":"Po-boys","items":[{"n":"Blue Bayou","d":"New Orleans BBQ shrimp in garlic Worcestershire butter","on":true,"p":19},{"n":"Fried Shrimp","d":"","on":true,"p":17},{"n":"Fried Oyster","d":"","on":true,"p":19},{"n":"Fried Alligator","d":"With Creole mustard","on":true,"p":18},{"n":"Crispy Catfish","d":"","on":true,"p":17}],"note":"dressed, on Leidenheimer French bread"},{"h":"To finish","items":[{"n":"Bananas Foster Cheesecake","d":"Bananas, cinnamon, brown sugar and rum","on":true,"p":11},{"n":"New Orleans Bread Pudding","d":"Praline rum sauce","on":true,"p":10},{"n":"Kentucky Bourbon Pecan Pie","d":"","on":true,"p":10},{"n":"Praline Brownie à la Mode","d":"Vanilla bean ice cream, praline rum sauce","on":true,"p":12}]}],"brunch":[{"h":"Mornings","items":[{"n":"Crab Cake Benedict","d":"Lump crab cakes, poached eggs, Hollandaise","on":true,"p":22},{"n":"Shrimp Benedict","d":"Grilled jumbo Gulf shrimp, poached eggs, Hollandaise","on":true,"p":21},{"n":"Shrimp & Grits Napoleon","d":"Fried green tomatoes, creamy grits, Cajun cream","on":true,"p":24},{"n":"Chicken & Waffles","d":"Pearl Belgian waffles, Southern fried tenders, warm maple","on":true,"p":19},{"n":"Blue Bayou French Toast","d":"Texas toast with fresh berries","on":true,"p":15}],"note":"from 7am, every day"},{"h":"The plates","items":[{"n":"Blue Bayou Breakfast","d":"Smoked Gouda grits, eggs your way, bacon, sausage or alligator andouille","on":true,"p":17},{"n":"Cajun Omelette","d":"Alligator sausage, crawfish mushroom cream","on":true,"p":18},{"n":"Country Omelette","d":"Sausage, bacon, ham and cheddar","on":true,"p":16},{"n":"Garden Omelette","d":"Spinach, peppers, mushrooms, tomato, Hollandaise","on":true,"p":15},{"n":"The All Around Bagel","d":"Smoked salmon, cream cheese, capers","on":true,"p":16}]}],"drinks":[{"h":"House cocktails","items":[{"n":"Category 5 Hurricane","d":"Local sugar cane rums, passion fruit, pomegranate","on":true},{"n":"Rémy Streetcar","d":"Rémy Martin 1738, Cointreau, pineapple, fresh lemonade","on":true},{"n":"Blue Bayou Bloody Mary","d":"Fresh tomato, Absolut Peppar, Cajun spice","on":true},{"n":"Mardi Gras Margarita","d":"1800 Reposado, Cointreau, lime","on":true}]},{"h":"From the bar","items":[{"n":"Ponchatoula Sour","d":"Strawberry whiskey, fresh strawberry, house sour","on":true},{"n":"The Black Pearl","d":"1800 Blanco, blackberry liqueur, cranberry","on":true},{"n":"Frozen Daiquiris","d":"Ask what's spinning today","on":true}]}]},"lineup":{"0":[["Lily",600,840],["Josh",1020,1440]],"1":[["Josh",1020,1470]],"2":[["CJ Wolfe",1020,1470]],"3":[["CJ Wolfe",1020,1470]],"4":[["Anna Helms",1020,1260],["Josh",1260,1470]],"5":[["Lily",600,840],["Josh",1020,1320],["Ian",1320,1560]],"6":[["Lily",600,840],["Josh",1020,1380],["Ian",1380,1560]]}};
+  var S = {
+    get: function (k, f) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : f; } catch (e) { return f; } },
+    set: function (k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  };
+  function loadData() { var st = BB.get("bb-data-v1", null); if (!st || st.v !== DEF.v) return JSON.parse(JSON.stringify(DEF)); var o = {}; for (var k in DEF) o[k] = st[k] || DEF[k]; o.site = Object.assign({}, DEF.site, st.site || {}); return o; }
+  var D = loadData();
+  function saveData(msg) { BB.setData(JSON.parse(JSON.stringify(D))); toast(msg || "<b>Saved.</b> It's live on your website."); }
+
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+  function money(n) { n = +n || 0; return "$" + n.toFixed(n % 1 ? 2 : 0); }
+  var DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  function nola() {
+    try { var o = {}; new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", weekday: "long", hour: "numeric", minute: "numeric", hourCycle: "h23" }).formatToParts(new Date()).forEach(function (p) { o[p.type] = p.value; }); return { dow: DAYS.indexOf(o.weekday), min: (parseInt(o.hour, 10) % 24) * 60 + parseInt(o.minute, 10) }; }
+    catch (e) { var n = new Date(); return { dow: n.getDay(), min: n.getHours() * 60 + n.getMinutes() }; }
+  }
+  function fmt(m) { m = ((m % 1440) + 1440) % 1440; var h = Math.floor(m / 60), mm = m % 60; if (!h && !mm) return "midnight"; if (h === 12 && !mm) return "noon"; return (h % 12 || 12) + (mm ? ":" + String(mm).padStart(2, "0") : "") + (h >= 12 ? "pm" : "am"); }
+  function clockT(ts) { return new Date(ts).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/Chicago" }).toLowerCase().replace(" ", ""); }
+  var tt; function toast(h) { var t = R.getElementById("toast"); t.innerHTML = h; t.classList.add("on"); clearTimeout(tt); tt = setTimeout(function () { t.classList.remove("on"); }, 2600); }
+
+
+  /* ---------- motion helpers ---------- */
+  var RM = false; try { RM = matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) {}
+  var EASE = "cubic-bezier(.22,1,.36,1)";
+  function anim(el, kf, o) { if (RM || !el || !el.animate) return null; try { return el.animate(kf, Object.assign({ duration: 420, easing: EASE, fill: "backwards" }, o || {})); } catch (e) { return null; } }
+  function indicator(group, sel) {
+    var ind = document.createElement("span"); ind.className = "ind"; group.appendChild(ind); group.classList.add("js");
+    function place(go) {
+      var on = group.querySelector(sel); if (!on) return;
+      if (!go) ind.style.transition = "none";
+      var mob = group.classList.contains("tabs") && matchMedia("(max-width: 860px)").matches;
+      if (group.classList.contains("tabs") && !mob) { ind.style.width = (on.offsetWidth - 24) + "px"; ind.style.transform = "translateX(" + (on.offsetLeft + 12) + "px)"; ind.style.top = ""; ind.style.height = ""; }
+      else { ind.style.width = on.offsetWidth + "px"; ind.style.transform = "translateX(" + on.offsetLeft + "px)"; ind.style.top = on.offsetTop + "px"; ind.style.height = on.offsetHeight + "px"; }
+      if (!go) { ind.offsetWidth; ind.style.transition = ""; }
+    }
+    place(false); addEventListener("resize", function () { place(false); });
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { place(false); });
+    return place;
+  }
+  // FLIP: cards that stay glide to their new place when others leave or arrive
+  function flip(box, sel, render) {
+    var before = {};
+    [].forEach.call(box.querySelectorAll(sel), function (el) { before[el.dataset.id] = el.getBoundingClientRect(); });
+    render();
+    if (RM) return;
+    [].forEach.call(box.querySelectorAll(sel), function (el) {
+      var b = before[el.dataset.id]; if (!b) return; var a = el.getBoundingClientRect(), dx = b.left - a.left, dy = b.top - a.top;
+      if (dx || dy) anim(el, [{ transform: "translate(" + dx + "px," + dy + "px)" }, { transform: "none" }], { duration: 560 });
+    });
+  }
+  function leave(el, then) { var a = anim(el, [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "scale(.94) translateY(8px)" }], { duration: 260, easing: "cubic-bezier(.65,0,.35,1)", fill: "forwards" }); if (a) a.onfinish = then; else then(); }
+  function countUp(el, to, f) {
+    var from = parseFloat(el.dataset.v || "0"); el.dataset.v = to;
+    if (RM || from === to) { el.textContent = f(to); return; }
+    var t0 = performance.now(), d = 700; (function step(t) { var k = Math.min(1, (t - t0) / d), e = 1 - Math.pow(1 - k, 3); el.textContent = f(from + (to - from) * e); if (k < 1) requestAnimationFrame(step); })(t0);
+  }
+  function stagger(list) { [].forEach.call(list, function (el, i) { anim(el, [{ opacity: 0, transform: "translateY(14px)" }, { opacity: 1, transform: "none" }], { duration: 560, delay: Math.min(i * 45, 400) }); }); }
+  /* ---------- tabs ---------- */
+  var TAB = S.get("bb-dash-tab", "orders");
+  var tabPlace = null;
+  function showTab(t, first) {
+    var changed = TAB !== t || first; TAB = t; S.set("bb-dash-tab", t);
+    R.querySelectorAll(".tabs button").forEach(function (b) { b.setAttribute("aria-selected", b.dataset.t === t ? "true" : "false"); });
+    ["orders", "requests", "music", "site"].forEach(function (k) { R.getElementById("p-" + k).hidden = k !== t; });
+    if (tabPlace) tabPlace(!first);
+    if (!changed) return;
+    window.scrollTo(0, 0);
+    var pg = R.getElementById("p-" + t);
+    anim(pg.querySelector(".pg-h"), [{ opacity: 0, transform: "translateY(12px)" }, { opacity: 1, transform: "none" }], { duration: 520 });
+    stagger(pg.querySelectorAll(".stats, .oc, .rq, .day, .live, .seg, .mgrid, .form, .sample:not([hidden]), h2.sec, .done"));
+  }
+  R.querySelectorAll(".tabs button").forEach(function (b) { b.addEventListener("click", function () { showTab(b.dataset.t); }); });
+
+  /* ---------- clock + taking orders ---------- */
+  function tick() {
+    var n = nola(), d = new Date().toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "America/Chicago" });
+    R.getElementById("clock").textContent = d + " · " + fmt(n.min) + " in New Orleans";
+    R.getElementById("hello").innerHTML = n.min < 720 && n.min >= 300 ? "Good <i>morning</i>" : (n.min < 1020 && n.min >= 720 ? "Good <i>afternoon</i>" : "Good <i>evening</i>");
+  }
+  var tk = R.getElementById("taking");
+  function paintTaking() { var on = D.site.taking !== false; tk.classList.toggle("off", !on); tk.setAttribute("aria-pressed", on ? "true" : "false"); R.getElementById("takingL").textContent = on ? "Taking orders" : "Orders paused"; }
+  tk.addEventListener("click", function () { D.site.taking = D.site.taking === false; paintTaking(); saveData(D.site.taking ? "<b>Taking orders.</b> The order button is back on your website." : "<b>Orders paused.</b> Your website asks guests to call instead."); });
+
+  /* ---------- samples so the first look isn't empty ---------- */
+  var now = Date.now(), M = 60000;
+  BB.seedLocal("bb-orders-v1", [
+    { id: "s1", sample: true, num: "BB-4813", at: now - 4 * M, due: now + 16 * M, asap: true, name: "Dana R.", phone: "(504) 555-0144", notes: "", lines: [{ n: "Mardi Gras Pasta", o: "", q: 1, u: 25 }, { n: "Fried Shrimp", o: "", q: 1, u: 17 }, { n: "New Orleans Bread Pudding", o: "", q: 2, u: 10 }], total: 62, status: "new" },
+    { id: "s2", sample: true, num: "BB-4812", at: now - 9 * M, due: now + 6 * M, asap: true, name: "Marcus T.", phone: "(504) 555-0187", notes: "Extra lemons please, and utensils for two", lines: [{ n: "Famous Chargrilled", o: "Dozen", q: 1, u: 33 }, { n: "Crawfish Étouffée", o: "", q: 2, u: 22 }], total: 77, status: "new" },
+    { id: "s3", sample: true, num: "BB-4809", at: now - 31 * M, due: now - 3 * M, asap: false, name: "Luis M.", phone: "(504) 555-0102", notes: "", lines: [{ n: "Taste of the Bayou", o: "All four", q: 1, u: 35 }], total: 35, status: "ready" },
+    { id: "s4", sample: true, num: "BB-4805", at: now - 95 * M, due: now - 70 * M, asap: true, name: "Keisha W.", phone: "(504) 555-0171", notes: "", lines: [{ n: "Louisiana Crab Cake", o: "", q: 2, u: 16 }, { n: "Raw on the Half Shell", o: "Dozen", q: 1, u: 27 }], total: 59, status: "picked", doneAt: now - 66 * M }
+  ]);
+  BB.seedLocal("bb-requests-v1", [
+    { id: "r1", sample: true, at: now - 50 * M, kind: "party", name: "Renée Broussard", phone: "(504) 555-0142", date: new Date(now + 9 * 864e5).toISOString().slice(0, 10), size: "20 to 40", occ: "Birthday", hand: "", notes: "Surprise for my mom, could the band play a song for her around 8?", status: "new" },
+    { id: "r2", sample: true, at: now - 5 * 3600000, kind: "cater", name: "Jordan Pellerin", phone: "(504) 555-0133", date: new Date(now + 4 * 864e5).toISOString().slice(0, 10), size: "20 to 40", occ: "Company dinner", hand: "pickup", notes: "Office lunch. Gumbo, jambalaya and something vegetarian.", status: "new" },
+    { id: "r3", sample: true, at: now - 2 * 864e5, kind: "party", name: "Tom Hebert", phone: "(504) 555-0119", date: new Date(now + 21 * 864e5).toISOString().slice(0, 10), size: "40 to 75", occ: "Holiday party", hand: "", notes: "", status: "booked" }
+  ]);
+
+  /* ---------- orders ---------- */
+  var seen = {}, beepReady = false;
+  document.addEventListener("pointerdown", function () { beepReady = true; }, { once: true });
+  function beep() { if (!beepReady) return; try { var c = new (window.AudioContext || window.webkitAudioContext)(), o = c.createOscillator(), g = c.createGain(); o.connect(g); g.connect(c.destination); o.frequency.value = 880; g.gain.setValueAtTime(.0001, c.currentTime); g.gain.exponentialRampToValueAtTime(.25, c.currentTime + .02); g.gain.exponentialRampToValueAtTime(.0001, c.currentTime + .6); o.start(); o.stop(c.currentTime + .65); } catch (e) {} }
+  function orders() { return BB.get("bb-orders-v1", []); }
+  function ringSvg(p, col) { var C = 2 * Math.PI * 19; return '<svg viewBox="0 0 46 46"><circle cx="23" cy="23" r="19" fill="none" stroke="rgba(30,42,72,.12)" stroke-width="4"/><circle cx="23" cy="23" r="19" fill="none" stroke="' + col + '" stroke-width="4" stroke-linecap="round" stroke-dasharray="' + C + '" stroke-dashoffset="' + (C * (1 - p)) + '"/></svg>'; }
+  function renderOrders(fresh) {
+    var a = orders(), t = Date.now();
+    var act = a.filter(function (o) { return o.status !== "picked"; }).sort(function (x, y) { return (x.status === "ready") - (y.status === "ready") || x.due - y.due; });
+    var dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+    var today = a.filter(function (o) { return o.at >= dayStart.getTime() - 6 * 3600000; });
+    var waiting = act.filter(function (o) { return o.status === "new"; }).length;
+    R.getElementById("waiting").innerHTML = waiting ? "<b>" + waiting + (waiting === 1 ? " order" : " orders") + "</b> waiting for the kitchen." + (act.length - waiting ? " " + (act.length - waiting) + " bagged and ready." : "") : (act.length ? act.length + " ready for pickup." : "No orders waiting. Nice and quiet.");
+    var b = R.getElementById("bOrders"); if (String(waiting) !== b.textContent) { b.classList.remove("bump"); b.offsetWidth; b.classList.add("bump"); } b.textContent = waiting; b.dataset.n = waiting;
+    document.title = (waiting ? "(" + waiting + ") " : "") + "Blue Bayou Dashboard";
+    R.getElementById("oSample").hidden = !a.some(function (o) { return o.sample; });
+    var sales = today.reduce(function (s, o) { return s + o.total; }, 0);
+    var st = R.getElementById("stats"), SV = [["Orders today", today.length, String], ["Sales today", sales, money], ["Average order", today.length ? Math.round(sales / today.length) : 0, money], ["Ready now", act.length - waiting, String]];
+    if (!st.children.length) st.innerHTML = SV.map(function (x) { return '<div class="stat"><small>' + x[0] + "</small><b>" + x[2](0) + "</b></div>"; }).join("");
+    SV.forEach(function (x, i) { countUp(st.children[i].querySelector("b"), x[1], function (v) { return x[2](Math.round(v)); }); });
+    var liveBox = R.getElementById("live");
+    flip(liveBox, ".oc", function () { liveBox.innerHTML = act.length ? act.map(function (o) {
+      var left = Math.round((o.due - t) / M), tot = Math.max(1, (o.due - o.at) / M), ready = o.status === "ready", late = !ready && left < 0;
+      var p = ready ? 1 : Math.max(0, Math.min(1, left / tot)), col = ready ? "#3c7a52" : (late || left <= 5 ? "#b4432a" : "#9c7638");
+      return '<article data-id="' + esc(o.id) + '" class="oc' + (ready ? " ready" : "") + (late ? " late" : "") + (fresh && fresh[o.id] ? " fresh" : "") + '">' +
+        '<div class="oc-h"><div class="ring">' + ringSvg(p, col) + "<b>" + (ready ? "✓" : (late ? "!" : left)) + '</b></div><div class="tm"><b>' + (ready ? "Ready, waiting for pickup" : (late ? Math.abs(left) + " min late" : "min left")) + "</b><small>" + (o.asap ? "As soon as possible, by " : "Pickup at ") + clockT(o.due) + '</small></div><span class="tag">Pickup</span></div>' +
+        '<div class="oc-b"><div class="who"><div><b>' + esc(o.name) + "</b><small>" + esc(o.num) + " · ordered " + clockT(o.at) + '</small></div><a class="call" href="tel:' + esc(o.phone.replace(/\D/g, "")) + '">' + esc(o.phone) + "</a></div>" +
+        '<ul class="lines">' + o.lines.map(function (l) { return "<li><b>" + l.q + "×</b><span>" + esc(l.n) + (l.o ? " <small>" + esc(l.o) + "</small>" : "") + "</span></li>"; }).join("") + "</ul>" +
+        (o.notes ? '<div class="note"><b>Note</b>' + esc(o.notes) + "</div>" : "") + "</div>" +
+        '<div class="oc-f"><div class="tot"><b>' + money(o.total) + "</b><small>Pays at pickup</small></div>" +
+        '<button class="big" type="button" data-go="' + esc(o.id) + '">' + (ready ? "Picked up" : "Ready for pickup") + "</button>" +
+        (ready ? '<button class="undo" type="button" data-back="' + esc(o.id) + '">Not ready yet</button>' : "") + "</div></article>";
+    }).join("") : '<div class="empty"><b>All caught up</b>New pickup orders from your website show up here with a sound.</div>'; });
+    var done = a.filter(function (o) { return o.status === "picked"; }).sort(function (x, y) { return (y.doneAt || 0) - (x.doneAt || 0); }).slice(0, 25);
+    R.getElementById("doneList").innerHTML = done.length ? done.map(function (o) { return '<div class="drow"><span class="t">' + clockT(o.doneAt || o.due) + '</span><span class="n">' + esc(o.name) + '</span><span class="i">' + esc(o.lines.map(function (l) { return l.q + "× " + l.n; }).join(", ")) + '</span><span class="m">' + money(o.total) + "</span></div>"; }).join("") : '<div class="drow"><span class="t">·</span><span class="n" style="color:var(--stone);font-weight:400">Picked-up orders land here.</span></div>';
+  }
+  R.getElementById("live").addEventListener("click", function (e) {
+    var g = e.target.closest("[data-go]"), bk = e.target.closest("[data-back]"); if (!g && !bk) return;
+    var id = (g || bk).dataset.go || bk.dataset.back, a = orders(), card = (g || bk).closest(".oc"), going = false;
+    a.forEach(function (o) { if (o.id !== id) return; if (bk) o.status = "new"; else if (o.status === "ready") { o.status = "picked"; o.doneAt = Date.now(); going = true; } else o.status = "ready"; BB.putOrder(o); });
+    if (going) leave(card, function () { renderOrders(); var r = R.querySelector("#doneList .drow"); anim(r, [{ opacity: 0, transform: "translateY(-8px)", background: "#fbf3df" }, { opacity: 1, transform: "none", background: "transparent" }], { duration: 900 }); });
+    else renderOrders();
+    var o = a.filter(function (x) { return x.id === id; })[0];
+    if (o && !bk) toast(o.status === "ready" ? "<b>" + esc(o.name) + "</b> sees “Ready” on their screen." : "<b>" + esc(o.name) + "</b> picked up. Nice.");
+  });
+  R.getElementById("clearO").addEventListener("click", function () {
+    var gone = [].filter.call(R.querySelectorAll("#live .oc"), function (c) { return /^s\d/.test(c.dataset.id); }), n = gone.length;
+    function fin() { orders().filter(function (o) { return o.sample; }).forEach(function (o) { BB.delOrder(o.id); }); renderOrders(); toast("Sample orders cleared."); }
+    if (!n) return fin(); gone.forEach(function (c, i) { setTimeout(function () { leave(c, function () { if (--n === 0) fin(); }); }, i * 60); });
+  });
+
+  /* ---------- parties & catering ---------- */
+  var RF = "open";
+  function reqs() { return BB.get("bb-requests-v1", []); }
+  function niceDate(v) { if (!v) return "No date"; var d = new Date(v + "T12:00:00"); return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }); }
+  function ago(ts) { var m = Math.round((Date.now() - ts) / M); if (m < 1) return "just now"; if (m < 60) return m + " min ago"; if (m < 1440) return Math.round(m / 60) + " hr ago"; return Math.round(m / 1440) + " days ago"; }
+  var STL = { "new": ["To call back", ""], called: ["Called, waiting to hear", "called"], booked: ["Booked", "booked"], no: ["Couldn't do it", "no"] };
+  function renderReqs() {
+    var a = reqs().sort(function (x, y) { return y.at - x.at; }), open = a.filter(function (r) { return r.status === "new" || r.status === "called"; });
+    var nw = a.filter(function (r) { return r.status === "new"; }).length, b = R.getElementById("bReq"); b.textContent = nw; b.dataset.n = nw;
+    R.getElementById("rSample").hidden = !a.some(function (r) { return r.sample; });
+    var list = RF === "open" ? open : a;
+    R.getElementById("reqs").innerHTML = list.length ? list.map(function (r) {
+      var st = STL[r.status] || STL["new"];
+      return '<article class="rq kept" data-id="' + esc(r.id) + '"><div class="rq-h"><span class="kind' + (r.kind === "cater" ? " cater" : "") + '">' + (r.kind === "cater" ? "Catering" : "Party here") + '</span><span class="st ' + st[1] + '">' + st[0] + "</span><small>" + ago(r.at) + "</small></div>" +
+        '<div class="who"><div><h3>' + esc(r.name) + '</h3></div><a class="call" href="tel:' + esc(r.phone.replace(/\D/g, "")) + '">' + esc(r.phone) + "</a></div>" +
+        '<div class="facts"><div><small>Date</small><b>' + niceDate(r.date) + "</b></div><div><small>Guests</small><b>" + esc(r.size) + "</b></div><div><small>" + (r.kind === "cater" ? "Getting it there" : "Occasion") + "</small><b>" + esc(r.kind === "cater" ? (r.hand === "delivery" ? "Asks about delivery" : "Pickup") : r.occ) + "</b></div></div>" +
+        (r.notes ? '<div class="note"><b>Their note</b>' + esc(r.notes) + "</div>" : "") +
+        '<div class="acts">' + (r.status !== "called" ? '<button class="btn sm soft" type="button" data-rs="called" data-id="' + r.id + '">Called them</button>' : "") + (r.status !== "booked" ? '<button class="btn sm" type="button" data-rs="booked" data-id="' + r.id + '">Booked</button>' : "") + (r.status !== "no" ? '<button class="btn sm soft" type="button" data-rs="no" data-id="' + r.id + '">Couldn’t do it</button>' : "") + "</div></article>";
+    }).join("") : '<div class="empty"><b>Nobody to call back</b>New party and catering requests from your website land here.</div>';
+  }
+  R.getElementById("reqs").addEventListener("click", function (e) {
+    var bt = e.target.closest("[data-rs]"); if (!bt) return;
+    var a = reqs(); a.forEach(function (r) { if (r.id === bt.dataset.id) { r.status = bt.dataset.rs; BB.putReq(r); } });
+    var card = bt.closest(".rq"), box = R.getElementById("reqs"), msg = { called: "Marked as called.", booked: "Booked. Nice.", no: "Marked as couldn't do it." }[bt.dataset.rs];
+    if (RF === "open" && (bt.dataset.rs === "booked" || bt.dataset.rs === "no")) leave(card, function () { flip(box, ".rq", renderReqs); toast(msg); });
+    else { flip(box, ".rq", renderReqs); toast(msg); }
+  });
+  R.querySelectorAll(".filters button").forEach(function (b) { b.addEventListener("click", function () { RF = b.dataset.f; R.querySelectorAll(".filters button").forEach(function (x) { x.setAttribute("aria-pressed", x === b ? "true" : "false"); }); filPlace(true); flip(R.getElementById("reqs"), ".rq", renderReqs); stagger(R.querySelectorAll("#reqs .rq:not(.kept)")); }); });
+  R.getElementById("clearR").addEventListener("click", function () { reqs().filter(function (r) { return r.sample; }).forEach(function (r) { BB.delReq(r.id); }); renderReqs(); toast("Sample requests cleared."); });
+
+  /* ---------- music ---------- */
+  var TIMES = []; for (var m = 360; m <= 1440 + 300; m += 30) TIMES.push(m);
+  function topts(sel) { return TIMES.map(function (m) { return '<option value="' + m + '"' + (m === sel ? " selected" : "") + ">" + fmt(m) + "</option>"; }).join(""); }
+  function renderLive() {
+    var n = nola(), L = D.lineup, prev = (n.dow + 6) % 7, on = null, next = null;
+    (L[n.dow] || []).forEach(function (s) { if (n.min >= s[1] && n.min < s[2]) on = s; if (!next && s[1] > n.min) next = s; });
+    (L[prev] || []).forEach(function (s) { if (n.min + 1440 >= s[1] && n.min + 1440 < s[2]) on = s; });
+    R.getElementById("liveNow").innerHTML = on ? '<span class="lamp"></span>On stage now on your website: <b>' + esc(on[0]) + "</b><small>until " + fmt(on[2]) + "</small>" : '<span class="lamp off"></span>' + (next ? "Up next on your website: <b>" + esc(next[0]) + "</b><small>at " + fmt(next[1]) + "</small>" : "No more music today. <small>Tomorrow's lineup shows on your website after the last set.</small>");
+  }
+  function renderMusic() {
+    var td = nola().dow, order = [1, 2, 3, 4, 5, 6, 0];
+    R.getElementById("days").innerHTML = order.map(function (d) {
+      var sets = D.lineup[d] || [];
+      return '<div class="day' + (d === td ? " today" : "") + '"><div class="day-h"><h3>' + DAYS[d] + "</h3>" + (d === td ? "<small>Today</small>" : "") + "</div>" +
+        (sets.length ? sets.map(function (s, i) { return '<div class="set"><input value="' + esc(s[0]) + '" data-d="' + d + '" data-i="' + i + '" data-k="0" aria-label="Who is playing"><select data-d="' + d + '" data-i="' + i + '" data-k="1" aria-label="Starts">' + topts(s[1]) + '</select><select data-d="' + d + '" data-i="' + i + '" data-k="2" aria-label="Ends">' + topts(s[2]) + '</select><button class="x" type="button" data-del="' + d + ":" + i + '" aria-label="Remove this set">×</button></div>'; }).join("") : '<p class="nomusic">No music this day.</p>') +
+        '<button class="addset" type="button" data-add="' + d + '">+ Add a set</button></div>';
+    }).join("");
+    renderLive();
+  }
+  var days = R.getElementById("days");
+  days.addEventListener("change", function (e) {
+    var el = e.target; if (!el.dataset.k) return;
+    var s = D.lineup[el.dataset.d][+el.dataset.i], k = +el.dataset.k;
+    s[k] = k === 0 ? (el.value.trim() || "Live music") : +el.value;
+    if (s[2] <= s[1]) { s[2] = s[1] + 120; renderMusic(); }
+    D.lineup[el.dataset.d].sort(function (a, b) { return a[1] - b[1]; });
+    saveData(); renderLive();
+  });
+  days.addEventListener("click", function (e) {
+    var a = e.target.closest("[data-add]"), x = e.target.closest("[data-del]");
+    if (a) { var L = D.lineup[a.dataset.add] = D.lineup[a.dataset.add] || [], st = L.length ? L[L.length - 1][2] : 1020; L.push(["New act", st, st + 180]); saveData(); renderMusic(); var ins = days.querySelectorAll('input[data-d="' + a.dataset.add + '"]'); if (ins.length) { var last = ins[ins.length - 1]; last.closest(".set").classList.add("new"); last.focus(); last.select(); } }
+    if (x) { var p = x.dataset.del.split(":"); leave(x.closest(".set"), function () { D.lineup[p[0]].splice(+p[1], 1); saveData("<b>Set removed.</b> The website is updated."); renderMusic(); }); }
+  });
+
+  /* ---------- website: menu ---------- */
+  var SECT = { dinner: "Lunch & dinner", brunch: "Breakfast", drinks: "Cocktails" }, CAT = "all", Q = "";
+  function allGroups() { var g = []; Object.keys(D.menu).forEach(function (k) { D.menu[k].forEach(function (gr, gi) { g.push({ k: k, gi: gi, gr: gr, id: k + gi }); }); }); return g; }
+  function priceCtl(it, path) {
+    if (it.p == null) return '<span style="font-size:.84rem;color:var(--stone)">Price on request</span>';
+    if (typeof it.p === "number") return '<label class="money"><span>$</span><input inputmode="decimal" value="' + it.p + '" data-pp="' + path + '" data-o="-1" aria-label="Price of ' + esc(it.n) + '"></label>';
+    return it.p.map(function (o, oi) { return '<label class="money"><span>' + esc(o[0]) + " $</span><input inputmode=\"decimal\" value=\"" + o[1] + '" data-pp="' + path + '" data-o="' + oi + '" aria-label="' + esc(o[0]) + " price of " + esc(it.n) + '"></label>'; }).join("");
+  }
+  function renderSide() {
+    var all = 0, off = [];
+    allGroups().forEach(function (g) { g.gr.items.forEach(function (i) { all++; if (i.on === false) off.push(i.n); }); });
+    R.getElementById("side").innerHTML = "<div><small style=\"color:var(--stone);font-size:.84rem\">Your menu</small><div class=\"num\">" + all + "</div><small>dishes and drinks on your website</small></div>" +
+      '<div class="two"><div><b>' + (all - off.length) + "</b><small>available</small></div><div><b>" + off.length + "</b><small>switched off</small></div></div>" +
+      '<p class="off-list">' + (off.length ? "<b>Switched off right now:</b> " + esc(off.join(", ")) + ". Switch them back on when they're ready." : "<b>Everything is available.</b> Switch a dish off when you run out and it disappears from the website and from online ordering.") + "</p>" +
+      '<button class="btn gold" type="button" id="addDish">+ Add a new dish</button>';
+  }
+  function renderMenuEd() {
+    var gs = allGroups();
+    R.getElementById("cats").innerHTML = '<button type="button" data-c="all" aria-pressed="' + (CAT === "all") + '">All<span>' + gs.reduce(function (s, g) { return s + g.gr.items.length; }, 0) + "</span></button>" +
+      gs.map(function (g) { return '<button type="button" data-c="' + g.id + '" aria-pressed="' + (CAT === g.id) + '">' + esc(g.gr.h) + "<span>" + g.gr.items.length + "</span></button>"; }).join("");
+    var q = Q.toLowerCase();
+    R.getElementById("dishes").innerHTML = gs.filter(function (g) { return CAT === "all" || CAT === g.id; }).map(function (g) {
+      var items = g.gr.items.map(function (it, ii) { return [it, ii]; }).filter(function (x) { return !q || (x[0].n + " " + (x[0].d || "")).toLowerCase().indexOf(q) > -1; });
+      if (!items.length) return "";
+      return '<div class="mgroup"><h3>' + esc(g.gr.h) + "<small>" + SECT[g.k] + "</small></h3>" + items.map(function (x) {
+        var it = x[0], path = g.k + "." + g.gi + "." + x[1], on = it.on !== false;
+        return '<div class="dish' + (on ? "" : " off") + '" data-path="' + path + '"><div class="dn"><b>' + esc(it.n) + "</b><p>" + esc(it.d || "No description yet") + '</p><button class="edit" type="button" data-ed="' + path + '">Edit name or description</button></div><div class="pr">' + priceCtl(it, path) + "</div>" +
+          '<div class="tog"><span>' + (on ? "On the menu and on the website" : "Switched off, hidden from the website") + '</span><button class="switch" type="button" role="switch" aria-checked="' + on + '" data-sw="' + path + '"><span class="sw"></span>' + (on ? "On" : "Off") + "</button></div></div>";
+      }).join("") + "</div>";
+    }).join("") || '<div class="empty"><b>No dish called that</b>Try another word, or add it as a new dish.</div>';
+    renderSide();
+  }
+  function at(path) { var p = path.split("."); return D.menu[p[0]][+p[1]].items[+p[2]]; }
+  var ME = R.getElementById("s-menu");
+  ME.addEventListener("click", function (e) {
+    var c = e.target.closest("[data-c]"), sw = e.target.closest("[data-sw]"), ed = e.target.closest("[data-ed]");
+    if (c) { CAT = c.dataset.c; renderMenuEd(); stagger(R.querySelectorAll("#dishes .mgroup h3, #dishes .dish")); }
+    if (sw) {
+      var it = at(sw.dataset.sw); it.on = it.on === false; saveData(it.on ? "<b>" + esc(it.n) + "</b> is back on your website." : "<b>" + esc(it.n) + "</b> is switched off. Guests can't order it.");
+      var box = sw.closest(".dish"); box.classList.toggle("off", !it.on); sw.setAttribute("aria-checked", String(it.on)); sw.lastChild.textContent = it.on ? "On" : "Off";
+      box.querySelector(".tog span").textContent = it.on ? "On the menu and on the website" : "Switched off, hidden from the website"; renderSide();
+    }
+    if (ed) {
+      var box = ed.closest(".dish"), it2 = at(ed.dataset.ed); if (box.querySelector(".dedit")) return;
+      var f = document.createElement("div"); f.className = "dedit";
+      f.innerHTML = '<div class="fld"><label>Name</label><input value="' + esc(it2.n) + '" data-f="n"></div><div class="fld"><label>Description</label><textarea data-f="d">' + esc(it2.d || "") + '</textarea></div><div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn sm" type="button" data-save="' + ed.dataset.ed + '">Save</button><button class="btn sm soft" type="button" data-cancel>Cancel</button><button class="btn sm soft" type="button" data-rm="' + ed.dataset.ed + '" style="margin-left:auto;color:var(--late)">Delete dish</button></div>';
+      box.appendChild(f); f.querySelector("input").focus({ preventScroll: true });
+    }
+    var sv = e.target.closest("[data-save]"), cn = e.target.closest("[data-cancel]"), rm = e.target.closest("[data-rm]");
+    if (sv) { var it3 = at(sv.dataset.save), bx = sv.closest(".dish"); var nm = bx.querySelector('[data-f="n"]').value.trim(); if (nm) it3.n = nm; it3.d = bx.querySelector('[data-f="d"]').value.trim(); saveData(); renderMenuEd(); }
+    if (cn) renderMenuEd();
+    if (rm) { var p = rm.dataset.rm.split("."), gone = D.menu[p[0]][+p[1]].items.splice(+p[2], 1)[0]; saveData("<b>" + esc(gone.n) + "</b> deleted from your menu."); renderMenuEd(); }
+    if (e.target.id === "addDish") addForm();
+  });
+  ME.addEventListener("change", function (e) {
+    var el = e.target; if (!el.dataset.pp) return;
+    var it = at(el.dataset.pp), v = Math.round(parseFloat(String(el.value).replace(/[^0-9.]/g, "")) * 100) / 100;
+    if (!(v >= 0)) { toast("Please type a price, like 18 or 18.50"); renderMenuEd(); return; }
+    var o = +el.dataset.o; if (o < 0) it.p = v; else it.p[o][1] = v;
+    // dishes listed twice (breakfast and dinner) keep the same price
+    allGroups().forEach(function (g) { g.gr.items.forEach(function (x) { if (x !== it && x.n === it.n && x.p != null && typeof x.p === typeof it.p) x.p = JSON.parse(JSON.stringify(it.p)); }); });
+    el.value = v; saveData("<b>" + esc(it.n) + "</b> is now " + (o < 0 ? money(v) : money(v) + " for " + esc(it.p[o][0].toLowerCase())) + " on your website.");
+  });
+  R.getElementById("srch").addEventListener("input", function (e) { Q = e.target.value; renderMenuEd(); });
+  function addForm() {
+    if (R.getElementById("addf")) return;
+    var gs = allGroups(), f = document.createElement("form"); f.className = "addform"; f.id = "addf";
+    f.innerHTML = '<h3 style="font-size:1.3rem">New dish</h3><div class="row2"><div class="fld"><label for="nf-n">Name</label><input id="nf-n" required placeholder="Shrimp Creole"></div><div class="fld"><label for="nf-g">Section</label><select id="nf-g">' + gs.map(function (g) { return '<option value="' + g.k + "." + g.gi + '">' + esc(g.gr.h) + " (" + SECT[g.k] + ")</option>"; }).join("") + '</select></div></div><div class="fld"><label for="nf-d">Description</label><input id="nf-d" placeholder="What is it, in a few words"></div><div class="row2"><div class="fld"><label for="nf-p">Price</label><input id="nf-p" inputmode="decimal" placeholder="24"></div><div class="fld"><span class="lab">Online ordering</span><p class="help" style="margin:0">Dishes with a price can be ordered for pickup. Leave the price empty for drinks.</p></div></div><div style="display:flex;gap:10px"><button class="btn gold" type="submit">Add to the menu</button><button class="btn soft" type="button" id="nf-x">Cancel</button></div>';
+    R.getElementById("dishes").prepend(f); R.getElementById("nf-n").focus();
+    f.addEventListener("submit", function (e) {
+      e.preventDefault(); var n = R.getElementById("nf-n").value.trim(); if (!n) return;
+      var g = R.getElementById("nf-g").value.split("."), pv = parseFloat(R.getElementById("nf-p").value);
+      var it = { n: n, d: R.getElementById("nf-d").value.trim(), on: true }; if (pv >= 0) it.p = Math.round(pv * 100) / 100;
+      D.menu[g[0]][+g[1]].items.push(it); saveData("<b>" + esc(n) + "</b> is on your website."); CAT = g[0] + g[1]; renderMenuEd();
+    });
+    R.getElementById("nf-x").addEventListener("click", function () { f.remove(); });
+  }
+
+  /* ---------- website: hours & details ---------- */
+  var OT = []; for (var a = 300; a <= 840; a += 30) OT.push(a);
+  var CT = []; for (var c2 = 1080; c2 <= 1440 + 360; c2 += 30) CT.push(c2);
+  function opt(list, sel) { return list.map(function (m) { return '<option value="' + m + '"' + (m === sel ? " selected" : "") + ">" + fmt(m) + "</option>"; }).join(""); }
+  function renderWords() {
+    var s = D.site;
+    R.getElementById("w-ann").value = s.announce || ""; R.getElementById("w-ph").value = s.phone || "";
+    R.getElementById("w-tag").value = s.tagline || ""; R.getElementById("w-mus").value = s.musicNote || "";
+    R.getElementById("hrs").innerHTML = [1, 2, 3, 4, 5, 6, 0].map(function (d) { var h = D.hours[d]; return '<div class="hr"><b style="font-weight:500">' + DAYS[d] + '</b><select data-h="' + d + '" data-k="0" aria-label="' + DAYS[d] + ' opens">' + opt(OT, h[0]) + '</select><span>to</span><select data-h="' + d + '" data-k="1" aria-label="' + DAYS[d] + ' closes">' + opt(CT, h[1]) + "</select></div>"; }).join("");
+  }
+  R.getElementById("words").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var ph = R.getElementById("w-ph").value.trim(), dg = ph.replace(/\D/g, "");
+    if (dg.length < 10) { toast("That phone number looks short. Please check it."); return; }
+    D.site.announce = R.getElementById("w-ann").value.trim(); D.site.phone = ph;
+    D.site.tagline = R.getElementById("w-tag").value.trim() || DEF.site.tagline; D.site.musicNote = R.getElementById("w-mus").value.trim();
+    R.querySelectorAll("[data-h]").forEach(function (s) { D.hours[s.dataset.h][+s.dataset.k] = +s.value; });
+    saveData();
+  });
+  R.querySelectorAll(".seg button").forEach(function (b) { b.addEventListener("click", function () { R.querySelectorAll(".seg button").forEach(function (x) { x.setAttribute("aria-pressed", x === b ? "true" : "false"); }); R.getElementById("s-menu").hidden = b.dataset.s !== "menu"; R.getElementById("s-words").hidden = b.dataset.s !== "words"; segPlace(true); var sh = R.getElementById(b.dataset.s === "menu" ? "s-menu" : "s-words"); anim(sh, [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "none" }], { duration: 480 }); }); });
+
+  /* ---------- live sync with the website and other devices ---------- */
+  BB.on(function (key, remote) {
+    if (key === "bb-orders-v1") {
+      var before = seen, now2 = {}, fresh = {}, added = false;
+      orders().forEach(function (o) { now2[o.id] = 1; if (!before[o.id] && !o.sample) { fresh[o.id] = 1; added = true; } });
+      seen = now2; renderOrders(fresh);
+      if (added && remote) { beep(); toast("<b>New pickup order</b> from your website."); }
+    }
+    if (key === "bb-requests-v1") { var nb = reqs().filter(function (r) { return r.status === "new" && !r.sample; }).length; renderReqs(); if (remote && nb > (renderReqs.nb || 0)) { toast("<b>New request</b> from your website."); beep(); } renderReqs.nb = nb; }
+    if (key === "bb-data-v1" && remote) {
+      var nd = loadData(); if (JSON.stringify(nd) === JSON.stringify(D)) return;
+      var ae = R.activeElement; if (ae && /INPUT|TEXTAREA|SELECT/.test(ae.tagName)) { D = nd; paintTaking(); renderLive(); return; }
+      D = nd; paintTaking(); renderMusic(); renderMenuEd(); renderWords(); toast("Updated from another device.");
+    }
+  });
+  BB.onLive(function () { R.getElementById("syncNote").hidden = false; });
+  // only the restaurant (owner or editors) runs the dashboard inside claude.ai
+  if (window.claude && window.claude.use) window.claude.use("user").then(function (u) { if (!u) return; return u.canEdit().then(function (ok) { if (!ok) R.getElementById("locked").hidden = false; }); }).catch(function () {});
+
+  tabPlace = indicator(R.querySelector(".tabs"), '[aria-selected="true"]');
+  var segPlace = indicator(R.querySelector(".seg"), '[aria-pressed="true"]'), filPlace = indicator(R.querySelector(".filters"), '[aria-pressed="true"]');
+  orders().forEach(function (o) { seen[o.id] = 1; });
+  tick(); paintTaking(); renderOrders(); renderReqs(); renderMusic(); renderMenuEd(); renderWords(); showTab(TAB, true);
+  setInterval(function () { tick(); renderOrders(); renderLive(); }, 30000);
+};
+</script>
+<script>
+window.mountDash = function () { var host = document.getElementById("dash"); if (!host || host.shadowRoot) return; var R = host.attachShadow({ mode: "open" }); R.appendChild(document.getElementById("dashTpl").content.cloneNode(true)); window.BBDash(R); };
+</script>
+<script>mountDash();</script>
+</body>
+</html>
